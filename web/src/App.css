@@ -1,0 +1,20 @@
+/* App-specific styles that complement index.css */
+
+/* Ensure full app import of core styles */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+.preview-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 12px; margin: 16px 0; }
+.preview-card { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.preview-card img { width: 100%; height: 140px; object-fit: contain; border-radius: 8px; background: #fff; }
+.preview-card span { overflow-wrap: anywhere; font-size: 0.8rem; }
+.preview-card button { padding: 6px; cursor: pointer; }
+.batch-results { margin-top: 20px; padding-top: 12px; border-top: 1px solid var(--border); }
+.batch-results h4 { margin: 20px 0 10px; }
+.receipt-result { padding: 12px; margin: 12px 0; background: var(--bg-secondary); border-radius: 8px; overflow-wrap: anywhere; }
+.receipt-result summary { cursor: pointer; font-weight: 600; }
+.receipt-result p, .receipt-result ul { margin-top: 8px; }
+.receipt-result ul { padding-left: 20px; }
+.table-scroll { overflow-x: auto; }
+.results-panel { min-width: 0; }
+button:disabled { cursor: not-allowed; opacity: 0.6; }
+@media (max-width: 800px) { .main-content { grid-template-columns: 1fr; } }
