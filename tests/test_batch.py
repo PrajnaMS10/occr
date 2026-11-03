@@ -8,6 +8,7 @@ from unittest.mock import Mock, patch
 from fastapi.testclient import TestClient
 from openpyxl import load_workbook
 from api import main
+from src.excel_export import write_export
 
 ROOT = Path(__file__).resolve().parent.parent
 SAMPLE = (ROOT / "images" / "receipt-ocr-original.jpg").read_bytes()
@@ -47,6 +48,87 @@ class BatchTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200, response.text)
             self.assertEqual(response.json()["total"], 2.25)
             self.assertEqual(response.json()["items"][0]["item_name"], "Milk")
+
+    def test_all_items_from_single_and_five_receipts_download(self):
+        # Exercise real preprocessing, normalization and rules extraction, with
+        # deterministic recognition output containing twenty items per receipt.
+        for method in ["rules", "llm"]:
+            for count in [1, 5]:
+                with self.subTest(method=method, receipts=count):
+                    ocr_results, llm_results = [], []
+                    for receipt_index in range(count):
+                        vendor = f"Market {receipt_index}"
+                        date = f"2026-01-{receipt_index + 1:02d}"
+                        price = receipt_index + 1.25
+                        receipt_items = [{"item_name": f"Product {item_index:02d}", "price": price}
+                                         for item_index in range(20)]
+                        rows = [(vendor, 0, 0), (date, 0, 30)]
+                        for item_index, item in enumerate(receipt_items):
+                            y = 60 + item_index * 30
+                            rows.extend([(item["item_name"], 0, y), (f"{price:.2f}", 200, y)])
+                        rows.extend([("TOTAL", 0, 690), (f"{price * 20:.2f}", 200, 690)])
+                        ocr_results.append([{"text": text, "bbox": [x, y, x + 100, y + 20],
+                                             "center_y": y + 10} for text, x, y in rows])
+                        llm_results.append({"vendor": vendor, "date": date, "total": price * 20,
+                                            "items": [{"name": item["item_name"], "price": item["price"]}
+                                                      for item in receipt_items]})
+                    self.engine.process.side_effect = ocr_results
+                    with patch.object(main.llm_engine, "extract", side_effect=llm_results):
+                        response = self.batch(method, files=[
+                            ("files", (f"receipt{i}.jpg", SAMPLE, "image/jpeg")) for i in range(count)])
+                    self.assertEqual(response.status_code, 200, response.text)
+                    batch = response.json()
+                    self.assertEqual(batch["successful_count"], count)
+                    self.assertEqual(len(batch["items"]), count * 20)
+                    download = self.client.get(batch["download_url"])
+                    self.assertEqual(download.status_code, 200)
+                    workbook = load_workbook(BytesIO(download.content), data_only=True)
+                    expected_items, expected_summary = [], []
+                    for receipt in batch["receipts"]:
+                        data = receipt["data"]
+                        self.assertEqual(len(data["items"]), 20)
+                        expected_items.extend((receipt["filename"], data["vendor"], data["date"],
+                                               item["item_name"], item["price"]) for item in data["items"])
+                        expected_summary.append((receipt["filename"], data["vendor"], data["date"],
+                                                 data["total"], "success", method))
+                    self.assertEqual(list(workbook["Items"].values)[1:], expected_items)
+                    self.assertEqual(list(workbook["Summary"].values)[1:-1], expected_summary)
+                    expected_total = sum(result["total"] for result in llm_results)
+                    self.assertEqual(batch["grand_total"], expected_total)
+                    self.assertEqual(workbook["Summary"].cell(count + 2, 4).value, expected_total)
+                    self.assertEqual(workbook["Items"].freeze_panes, "A2")
+                    self.assertIn("0.00", workbook["Items"]["E2"].number_format)
+                    self.assertEqual(workbook["Items"]["E2"].data_type, "n")
+                    workbook.close()
+
+    def test_export_uses_receipt_items_without_flattened_list(self):
+        receipts = [{"filename": "same.jpg", "status": "success", "method": "rules", "data": {
+            "vendor": "First", "date": "2026-01-01", "total": 3,
+            "items": [{"item_name": "Repeated", "price": 1}, {"item_name": "Repeated", "price": 1},
+                      {"item_name": None, "price": None}, {"price": 0}, {"item_name": "Missing price"}]}},
+            {"filename": "same.jpg", "status": "success", "method": "llm", "data": {
+                "vendor": "Second", "date": None, "total": 4,
+                "items": [{"item_name": "Other", "price": 4}]}},
+            {"filename": "failed.jpg", "status": "failed", "method": "rules", "error": "OCR failed",
+             "data": {"items": [{"item_name": "Do not export", "price": 99}]}}]
+        for flattened in [None, [], [{"item_name": "Stale item", "price": 999}]]:
+            with self.subTest(flattened=flattened):
+                batch = {"receipts": receipts, "grand_total": 7}
+                if flattened is not None:
+                    batch["items"] = flattened
+                path = Path(self.directory.name) / "receipt_items.xlsx"
+                write_export(batch, path)
+                workbook = load_workbook(path, data_only=True)
+                self.assertEqual(list(workbook["Items"].values)[1:], [
+                    ("same.jpg", "First", "2026-01-01", "Repeated", 1),
+                    ("same.jpg", "First", "2026-01-01", "Repeated", 1),
+                    ("same.jpg", "First", "2026-01-01", None, None),
+                    ("same.jpg", "First", "2026-01-01", None, 0),
+                    ("same.jpg", "First", "2026-01-01", "Missing price", None),
+                    ("same.jpg", "Second", None, "Other", 4)])
+                self.assertEqual(workbook["Summary"]["D5"].value, 7)
+                self.assertEqual(workbook["Errors"].max_row, 2)
+                workbook.close()
 
     def test_batch_rules_excel_and_download(self):
         response = self.batch()

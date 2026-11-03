@@ -24,14 +24,18 @@ def write_export(batch, path):
         data = receipt["data"] or {}
         append_text_safe(summary, [receipt["filename"], data.get("vendor"), data.get("date"),
                                   data.get("total"), receipt["status"], receipt["method"]])
+        # Receipt data is authoritative. Do not rely on the separately flattened
+        # UI list, which may be absent or incomplete when a report is generated.
+        if receipt["status"] == "success":
+            for item in data.get("items") or []:
+                append_text_safe(items, [receipt["filename"], data.get("vendor"),
+                                        data.get("date"), item.get("item_name"),
+                                        item.get("price")])
         if receipt["status"] == "failed":
             if errors is None:
                 errors = workbook.create_sheet("Errors")
                 errors.append(["Filename", "Error message", "Processing status"])
             append_text_safe(errors, [receipt["filename"], receipt["error"], receipt["status"]])
-    for item in batch["items"]:
-        append_text_safe(items, [item["filename"], item["vendor"], item["date"],
-                                 item["item_name"], item["price"]])
     summary.append(["Combined grand total", None, None, batch["grand_total"]])
     for cell in summary[summary.max_row]:
         cell.font = Font(bold=True)
